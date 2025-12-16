@@ -1,0 +1,23 @@
+# FastAPI and server dependencies
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-multipart==0.0.20
+aiofiles==24.1.0
+
+# HTTP client
+httpx==0.28.1
+
+# RAG-Anything and dependencies
+raganything[all]>=1.2.8
+
+# Document processing
+docling>=2.9.0
+
+# File conversion (optional)
+reportlab==4.2.5
+python-docx==1.1.2
+
+# Environment
+python-dotenv==1.0.1
