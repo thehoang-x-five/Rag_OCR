@@ -21,16 +21,47 @@ except ImportError:
     DOCLING_AVAILABLE = False
     logger.warning("Docling not available. Using simulation mode.")
 
+# Try to import AI provider manager
+try:
+    from app.core.ai_providers.provider_manager import AIProviderManager
+    AI_ENHANCEMENT_AVAILABLE = True
+except ImportError:
+    AI_ENHANCEMENT_AVAILABLE = False
+    logger.warning("AI enhancement not available")
+
+# Try to import Vietnamese processor
+try:
+    from app.core.vietnamese_processor import vietnamese_processor
+    VIETNAMESE_PROCESSOR_AVAILABLE = True
+except ImportError:
+    VIETNAMESE_PROCESSOR_AVAILABLE = False
+    logger.warning("Vietnamese processor not available")
+
 
 class DocumentEngine:
     def __init__(self):
         self.converter = None
+        self.ai_provider_manager = None
+        
         if DOCLING_AVAILABLE:
             try:
+                # Initialize converter with default settings
+                # Docling will automatically OCR everything it can
                 self.converter = DocumentConverter()
-                logger.info("Docling converter initialized successfully")
+                logger.info("Docling converter initialized with default settings (auto OCR)")
             except Exception as e:
                 logger.error(f"Failed to initialize Docling converter: {e}")
+                self.converter = None
+        
+        # Initialize AI provider manager if enabled
+        if settings.AI_ENHANCEMENT_ENABLED and AI_ENHANCEMENT_AVAILABLE:
+            try:
+                self.ai_provider_manager = AIProviderManager()
+                logger.info("AI Provider Manager initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize AI Provider Manager: {e}")
+                self.ai_provider_manager = None
+
         
     async def process_document(
         self,
@@ -84,6 +115,84 @@ class DocumentEngine:
             if "result" in result and "meta" in result["result"]:
                 result["result"]["meta"]["timings"]["parseMs"] = parse_time
             
+            # AI Enhancement step (if enabled)
+            # Skip if already enhanced (e.g., from _process_text_file)
+            logger.info(f"Checking AI enhancement: enabled={settings.AI_ENHANCEMENT_ENABLED}, manager={self.ai_provider_manager is not None}")
+            already_enhanced = "result" in result and "enhancedText" in result.get("result", {})
+            logger.info(f"Already enhanced: {already_enhanced}")
+            
+            if settings.AI_ENHANCEMENT_ENABLED and self.ai_provider_manager and not already_enhanced:
+                try:
+                    logger.info("Starting AI enhancement...")
+                    job_store.update_job(job_id, step=JobStep.POSTPROCESS, percent=85, 
+                                       message="Enhancing text with AI...")
+                    
+                    logger.info(f"Result keys: {result.keys()}")
+                    full_text = result.get("result", {}).get("fullText", "")
+                    target_language = settings_dict.get("language", "auto")
+                    logger.info(f"Full text length: {len(full_text)}, target_language: {target_language}")
+                    
+                    if full_text:
+                        # Vietnamese processing (if requested)
+                        if VIETNAMESE_PROCESSOR_AVAILABLE and target_language == "vi":
+                            logger.info("Applying Vietnamese text processing...")
+                            full_text = vietnamese_processor.process_vietnamese_text(
+                                full_text,
+                                restore_tones=True,
+                                normalize=True
+                            )
+                            # Update result with processed text
+                            result["result"]["fullText"] = full_text
+                        
+                        # Determine document type
+                        document_type = self._detect_document_type(file_path, full_text)
+                        
+                        # Read image data for vision enhancement if available
+                        image_data = None
+                        if settings.AI_USE_VISION_WHEN_AVAILABLE and file_ext in ['.jpg', '.jpeg', '.png', '.webp']:
+                            try:
+                                with open(file_path, 'rb') as f:
+                                    image_data = f.read()
+                            except Exception as e:
+                                logger.warning(f"Could not read image for vision enhancement: {e}")
+                        
+                        # Enhance text with AI (includes language translation if needed)
+                        enhancement_result = await self.ai_provider_manager.enhance_text(
+                            text=full_text,
+                            document_type=document_type,
+                            image_data=image_data,
+                            target_language=target_language
+                        )
+                        
+                        logger.info(f"Got enhancement result: {enhancement_result}")
+                        logger.info(f"Enhanced text: {enhancement_result.enhanced_text[:100]}")
+                        
+                        # Add enhanced text to result
+                        logger.info(f"Result structure: {result.keys()}")
+                        if "result" in result:
+                            logger.info(f"Adding enhancedText to result...")
+                            result["result"]["enhancedText"] = enhancement_result.enhanced_text
+                            result["result"]["aiMetadata"] = {
+                                "provider": enhancement_result.provider_used,
+                                "model": enhancement_result.model_used,
+                                "processingTimeMs": enhancement_result.processing_time_ms,
+                                "improvements": enhancement_result.improvements,
+                                "fallbackOccurred": enhancement_result.fallback_occurred,
+                                "targetLanguage": target_language
+                            }
+                            
+                            logger.info(f"AI enhancement completed with {enhancement_result.provider_used}")
+                            logger.info(f"Enhanced text length: {len(enhancement_result.enhanced_text)}")
+                            logger.info(f"Enhanced text preview: {enhancement_result.enhanced_text[:200]}")
+                            logger.info(f"Result now has enhancedText: {'enhancedText' in result['result']}")
+                        else:
+                            logger.error("No 'result' key in result dict!")
+                    
+                except Exception as e:
+                    logger.error(f"AI enhancement failed: {e}")
+                    logger.exception("Full traceback:")
+                    # Continue without enhancement - don't fail the whole job
+            
             # Update job as done
             job_store.update_job(job_id, status=JobStatus.DONE, step=JobStep.DONE, 
                                percent=100, message="Processing complete", result=result)
@@ -126,15 +235,32 @@ class DocumentEngine:
         # Extract text and structure from Docling result
         doc = result.document
         
-        # Get full text - try multiple methods
+        # Get full text - try multiple methods to ensure we get EVERYTHING
         full_text = ""
         if hasattr(doc, 'export_to_text'):
+            # Export with all content including headers/footers
             full_text = doc.export_to_text()
         elif hasattr(doc, 'text'):
             full_text = doc.text
         else:
             # Try to extract from body/content
             full_text = str(doc)
+        
+        # Also try to get text from all items (including headers/footers)
+        if hasattr(doc, 'iterate_items'):
+            try:
+                all_text_parts = []
+                for item, level in doc.iterate_items():
+                    if hasattr(item, 'text') and item.text:
+                        all_text_parts.append(item.text)
+                
+                # If we got more text from items, use that
+                items_text = '\n'.join(all_text_parts)
+                if len(items_text) > len(full_text):
+                    logger.info(f"Using items text ({len(items_text)} chars) instead of export ({len(full_text)} chars)")
+                    full_text = items_text
+            except Exception as e:
+                logger.warning(f"Could not iterate items: {e}")
         
         logger.info(f"Extracted text length: {len(full_text)} chars")
         
@@ -541,47 +667,136 @@ class DocumentEngine:
         block_bbox = {"x": 0.05, "y": 0.05, "w": 0.9, "h": 0.9}
         lines = self._build_lines_from_text(full_text, block_bbox)
         
+        # AI Enhancement (if enabled)
+        enhanced_text = None
+        ai_metadata = None
+        target_language = settings_dict.get("language", "auto")
+        
+        if settings.AI_ENHANCEMENT_ENABLED and self.ai_provider_manager and full_text:
+            try:
+                logger.info(f"Running AI enhancement for text file, target_language={target_language}")
+                
+                # Determine document type
+                document_type = self._detect_document_type(file_path, full_text)
+                
+                # Enhance text
+                enhancement_result = await self.ai_provider_manager.enhance_text(
+                    text=full_text,
+                    document_type=document_type,
+                    image_data=None,
+                    target_language=target_language
+                )
+                
+                enhanced_text = enhancement_result.enhanced_text
+                ai_metadata = {
+                    "provider": enhancement_result.provider_used,
+                    "model": enhancement_result.model_used,
+                    "processingTimeMs": enhancement_result.processing_time_ms,
+                    "improvements": enhancement_result.improvements,
+                    "fallbackOccurred": enhancement_result.fallback_occurred,
+                    "targetLanguage": target_language
+                }
+                
+                logger.info(f"AI enhancement completed: {len(enhanced_text)} chars")
+                logger.info(f"Enhanced text value: {enhanced_text[:200]}")
+                logger.info(f"Enhanced text is None: {enhanced_text is None}")
+                logger.info(f"Enhanced text is empty: {not enhanced_text}")
+            except Exception as e:
+                logger.error(f"AI enhancement failed: {e}")
+        
+        result_dict = {
+            "fullText": full_text,
+            "markdownText": markdown_text,
+            "layoutText": full_text,
+            "pages": pages,
+            "structured": {
+                "tables": [],
+                "equations": [],
+                "images": []
+            },
+            "layout": {
+                "pages": [{
+                    "page": 1,
+                    "width": 1.0,
+                    "height": 1.414,
+                    "blocks": [{
+                        "type": "text",
+                        "text": full_text,
+                        "bbox": block_bbox,
+                        "confidence": 1.0,
+                        "lines": lines
+                    }]
+                }]
+            },
+            "meta": {
+                "parser": "text-reader",
+                "parse_method": "direct",
+                "language": settings_dict.get("language", "auto"),
+                "pageCount": 1,
+                "avgConfidence": 1.0,
+                "timings": {
+                    "parseMs": 10,
+                    "postMs": 10
+                }
+            }
+        }
+        
+        # Add enhanced text if available
+        if enhanced_text:
+            logger.info(f"Adding enhancedText to result_dict: {enhanced_text[:100]}")
+            result_dict["enhancedText"] = enhanced_text
+        else:
+            logger.warning("No enhanced_text to add to result_dict")
+            
+        if ai_metadata:
+            result_dict["aiMetadata"] = ai_metadata
+        
+        logger.info(f"result_dict keys before return: {result_dict.keys()}")
+        logger.info(f"Has enhancedText in result_dict: {'enhancedText' in result_dict}")
+        
         return {
             "jobId": job_id,
             "status": "done",
-            "result": {
-                "fullText": full_text,
-                "markdownText": markdown_text,
-                "layoutText": full_text,
-                "pages": pages,
-                "structured": {
-                    "tables": [],
-                    "equations": [],
-                    "images": []
-                },
-                "layout": {
-                    "pages": [{
-                        "page": 1,
-                        "width": 1.0,
-                        "height": 1.414,
-                        "blocks": [{
-                            "type": "text",
-                            "text": full_text,
-                            "bbox": block_bbox,
-                            "confidence": 1.0,
-                            "lines": lines
-                        }]
-                    }]
-                },
-                "meta": {
-                    "parser": "text-reader",
-                    "parse_method": "direct",
-                    "language": settings_dict.get("language", "auto"),
-                    "pageCount": 1,
-                    "avgConfidence": 1.0,
-                    "timings": {
-                        "parseMs": 10,
-                        "postMs": 10
-                    }
-                }
-            },
+            "result": result_dict,
             "error": None
         }
+
+    def _detect_document_type(self, file_path: Path, text: str) -> str:
+        """
+        Detect document type for appropriate prompt selection
+        
+        Args:
+            file_path: Path to the document
+            text: Extracted text content
+            
+        Returns:
+            Document type (general, code, invoice, form, handwritten)
+        """
+        filename = file_path.name.lower()
+        text_lower = text.lower()
+        
+        # Check for code documents
+        code_indicators = ['def ', 'function ', 'class ', 'import ', 'const ', 'var ', 'let ', '#!/']
+        code_extensions = ['.py', '.js', '.ts', '.java', '.cpp', '.c', '.go', '.rs']
+        
+        if any(ext in filename for ext in code_extensions) or any(ind in text for ind in code_indicators):
+            return "code"
+        
+        # Check for invoices/receipts
+        invoice_indicators = ['invoice', 'receipt', 'total', 'tax', 'amount', 'payment']
+        if any(ind in text_lower for ind in invoice_indicators) and any(ind in filename for ind in ['invoice', 'receipt']):
+            return "invoice"
+        
+        # Check for forms
+        form_indicators = ['form', 'application', 'name:', 'date:', 'signature']
+        if any(ind in text_lower for ind in form_indicators) and 'form' in filename:
+            return "form"
+        
+        # Check for handwritten (usually from image files with certain patterns)
+        if file_path.suffix.lower() in ['.jpg', '.jpeg', '.png'] and len(text) < 500:
+            return "handwritten"
+        
+        return "general"
 
 
 # Global engine instance

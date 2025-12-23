@@ -107,6 +107,8 @@ class OcrResult(BaseModel):
     structured: Structured
     layout: Layout
     meta: Meta
+    enhancedText: Optional[str] = None  # AI-enhanced text
+    aiMetadata: Optional[Dict[str, Any]] = None  # AI enhancement metadata
 
 
 class JobResponse(BaseModel):

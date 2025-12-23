@@ -1,0 +1,456 @@
+@startuml VietBank-ERD
+
+title VietBank Digital Banking System - Entity Relationship Diagram
+footer Last Updated: 2024-12-21 | Firebase RTDB + Firestore
+
+skinparam linetype ortho
+skinparam shadowing false
+skinparam entity {
+  BackgroundColor #E8F5E9
+  BorderColor #388E3C
+  FontStyle bold
+}
+
+' ===================== RTDB =====================
+entity "users" as users {
+  * uid <<PK>>
+  --
+  * email <<UK>>
+  * username
+  * role : ENUM(CUSTOMER, OFFICER)
+  * status : ENUM(ACTIVE, LOCKED)
+  * ekycStatus : ENUM(PENDING, VERIFIED, REJECTED)
+  * canTransact : BOOLEAN
+  * createdAt : TIMESTAMP
+  --
+  phone
+  nationalId <<UK>>
+  cif <<UK>>
+  transactionPinHash
+  pinFailCount
+  pinLockedUntil
+  loginFailCount
+}
+
+entity "accounts" as accounts {
+  * accountNumber <<PK>>
+  --
+  * uid <<FK>>
+  * balance
+  * status : ENUM(ACTIVE, LOCKED)
+  * createdAt : TIMESTAMP
+  --
+  pin
+  pinUpdatedAt
+}
+
+entity "transactions" as transactions {
+  * transactionId <<PK>>
+  --
+  * type : ENUM(TRANSFER_INTERNAL, TRANSFER_EXTERNAL, CASH_WITHDRAW)
+  * status : ENUM(PENDING_OTP, PROCESSING, SUCCESS, FAILED, EXPIRED)
+  * customerUid <<FK>>
+  * sourceAccountNumber <<FK>>
+  amount
+  fee
+  content
+  createdAt
+  executedAt
+  --
+  destinationAccountNumber
+  destinationName
+  destinationBankName
+  destinationBankCode
+  isInternal
+  destAccUid <<FK>>
+  requiresBiometric
+  biometricVerifiedAt
+}
+
+entity "transactionOtps" as transactionOtps {
+  * transactionId <<PK, FK>>
+  --
+  * uid <<FK>>
+  * email
+  * otp
+  * createdAt
+  * expireAt
+  * attemptsLeft
+  * used
+}
+
+entity "accountTransactions" as accountTransactions {
+  * accountNumber <<PK, FK>>
+  * transactionId <<PK>>
+  --
+  * type
+  * direction : ENUM(IN, OUT)
+  * amount
+  content
+  createdAt
+  executedAt
+  --
+  sourceAccountNumber
+  destinationAccountNumber
+  destinationBankName
+  mortgageAccountNumber
+  savingNumber
+}
+
+entity "notifications" as notifications {
+  * notificationId <<PK>>
+  --
+  * uid <<FK>>
+  * type : ENUM(BALANCE_CHANGE, SYSTEM, PROMOTION, MORTGAGE_INTEREST_PAY, SAVING_WITHDRAW)
+  * direction : ENUM(IN, OUT)
+  * title
+  * message
+  * createdAt
+  --
+  amount
+  accountNumber
+  balanceAfter
+  transactionId <<FK>>
+  read : BOOLEAN
+}
+
+entity "savedRecipients" as savedRecipients {
+  * uid <<PK, FK>>
+  * recipientKey <<PK>>
+  --
+  * name
+  * accountNumber
+  * bankName
+  * bankCode
+  * updatedAt
+  nickname
+}
+
+entity "externalAccounts" as externalAccounts {
+  * bankName <<PK>>
+  * accountNumber <<PK>>
+  --
+  fullName
+  name
+  status : ENUM(ACTIVE, INACTIVE)
+}
+
+entity "stripeTopups" as stripeTopups {
+  * uid <<PK, FK>>
+  * topupId <<PK>>
+  --
+  * accountNumber <<FK>>
+  * amount
+  * status : ENUM(CREATED, PAID_PENDING_2FA, COMPLETED, CANCELED)
+  * createdAt
+  * updatedAt
+  stripeLink
+  paidAt
+  creditedAt
+  completedAt
+  canceledAt
+}
+
+entity "mortgageAccounts" as mortgageAccounts {
+  * uid <<PK, FK>>
+  * number <<PK>>
+  --
+  originalAmount
+  debtRemaining
+  termMonths
+  rate
+  startDate
+  maturityDate
+  note
+  createdAt
+  updatedAt
+}
+
+entity "mortgageInterestSchedules" as mortgageInterestSchedules {
+  * uid <<PK, FK>>
+  * mortgageAccountNumber <<PK, FK>>
+  * yyyymm <<PK>>
+  --
+  interestAmount
+  principalAmount
+  totalAmount
+  status : ENUM(DUE, PAID)
+  createdAt
+  paidAt
+  paidByAccountNumber
+}
+
+entity "mortgageInterestPayTransactions" as mortgageInterestPayTx {
+  * transactionId <<PK>>
+  --
+  * type : ENUM(MORTGAGE_INTEREST_PAY)
+  * status : ENUM(PENDING_OTP, PROCESSING, SUCCESS, FAILED, EXPIRED)
+  * uid <<FK>>
+  * mortgageAccountNumber <<FK>>
+  * paymentAccountNumber <<FK>>
+  * amount
+  principalAmount
+  interestAmount
+  requiresBiometric
+  biometricVerifiedAt
+  createdAt
+  executedAt
+  yyyymm
+}
+
+entity "mortgageInterestPayOtps" as mortgageInterestPayOtps {
+  * transactionId <<PK, FK>>
+  --
+  * uid <<FK>>
+  * email
+  * otp
+  * createdAt
+  * expireAt
+  * attemptsLeft
+  * used
+}
+
+entity "savingAccounts" as savingAccounts {
+  * uid <<PK, FK>>
+  * number <<PK>>
+  --
+  amount
+  term
+  rate
+  openDate
+  maturityDate
+  status : ENUM(ACTIVE, CLOSED)
+  createdAt
+  closedAt
+  payoutAccountNumber
+  payoutAmount
+  interestAmountPaid
+  isEarlyWithdrawal
+}
+
+entity "savingWithdrawOtps" as savingWithdrawOtps {
+  * transactionId <<PK>>
+  * uid <<FK>>
+  --
+  savingNumber <<FK>>
+  payoutAccountNumber <<FK>>
+  principal
+  interestAmount
+  payoutAmount
+  isEarlyWithdrawal
+  earlyRateApplied
+  status : ENUM(PENDING, SUCCESS, EXPIRED)
+  otpCode
+  createdAt
+  expireAt
+  confirmedAt
+}
+
+entity "utilityTransactions" as utilityTransactions {
+  * transactionId <<PK>>
+  --
+  * userId <<FK>>
+  * accountId <<FK>>
+  * type : ENUM(UTILITY_BILL_PAYMENT, PHONE_TOPUP, DATA_PACK_PURCHASE)
+  * status : ENUM(PENDING, SUCCESS)
+  * amount
+  * description
+  service
+  providerId
+  providerName
+  createdAt
+  createdAtServer
+  confirmedAt
+}
+
+entity "movieTransactions" as movieTransactions {
+  * transactionId <<PK>>
+  --
+  * userId <<FK>>
+  * accountId <<FK>>
+  * type : ENUM(MOVIE_BOOKING)
+  * status : ENUM(PENDING, SUCCESS, FAILED)
+  * amount
+  * description
+  cinemaId
+  cinemaName
+  movieId
+  movieTitle
+  showtimeId
+  date
+  time
+  room
+  selectedSeats : ARRAY
+  createdAt
+  createdAtServer
+  confirmedAt
+  bookingId
+  firestoreTransactionId
+}
+
+entity "otps" as otps {
+  * transactionId <<PK>>
+  --
+  * userId <<FK>>
+  * transactionType
+  * code
+  * expireAt
+  * createdAt
+}
+
+' ===================== FIRESTORE =====================
+entity "cinemas" as cinemas {
+  * id <<PK>>
+  --
+  * name
+  * address
+  * cityKey <<indexed>>
+  * lat
+  * lon
+  * rooms
+  * rating
+}
+
+entity "movies" as movies {
+  * id <<PK>>
+  --
+  * title
+  * genre
+  * duration
+  * rating
+  * description
+  * posterUrl
+  trailerUrl
+  images : ARRAY
+}
+
+entity "showtimes" as showtimes {
+  * id <<PK>>
+  --
+  * cinemaId <<FK, indexed>>
+  * movieId <<FK, indexed>>
+  * date <<indexed>>
+  * time
+  * room
+  * totalSeats
+  * occupiedSeats : ARRAY
+  * pricePerSeat
+}
+
+entity "movie_bookings" as movie_bookings {
+  * id <<PK>>
+  --
+  * userId <<FK, indexed>>
+  * cinemaId <<FK>>
+  * cinemaName
+  * movieId <<FK>>
+  * movieTitle
+  * showtimeId <<FK>>
+  * date
+  * time
+  * room
+  * selectedSeats : ARRAY
+  * totalAmount
+  * accountId <<FK>>
+  * status : ENUM(confirmed, cancelled)
+  * createdAt
+}
+
+entity "hotels" as hotels {
+  * id <<PK>>
+  --
+  * name
+  * cityKey <<indexed>>
+  * lat
+  * lon
+  * stars
+  * rating
+  * priceFrom
+  distanceToCenterKm
+  amenities : ARRAY
+  images : ARRAY
+}
+
+entity "hotel_rooms" as hotel_rooms {
+  * id <<PK>>
+  --
+  * hotelId <<FK, indexed>>
+  * name
+  * pricePerNight
+  * perks : ARRAY
+  refundable : BOOLEAN
+}
+
+entity "hotel_bookings" as hotel_bookings {
+  * id <<PK>>
+  --
+  * status : ENUM(PAID, CANCELLED, COMPLETED)
+  * customerUid <<FK, indexed>>
+  * hotelId <<FK>>
+  * hotelName
+  * roomId <<FK>>
+  * roomName
+  * checkIn
+  * checkOut
+  * checkInDateTime <<indexed>>
+  * checkOutDateTime <<indexed>>
+  * nights
+  * guests
+  * rooms
+  * total
+  * transactionId <<FK>>
+  * createdAt
+}
+
+' ===================== RELATIONSHIPS =====================
+users ||--o{ accounts : owns
+users ||--o{ transactions : transfer/withdraw
+users ||--o{ notifications : receives
+users ||--o{ savedRecipients : saves
+users ||--o{ stripeTopups : creates
+users ||--o{ mortgageAccounts : owns
+users ||--o{ savingAccounts : owns
+users ||--o{ mortgageInterestPayTx : pays mortgage interest
+users ||--o{ savingWithdrawOtps : withdraw saving
+users ||--o{ utilityTransactions : utility/mobile
+users ||--o{ movieTransactions : movie booking
+users ||--o{ otps : OtpService OTP
+
+accounts ||--o{ accountTransactions : history
+accounts ||--o{ transactions : source
+accounts ||--o{ stripeTopups : credited
+accounts ||--o{ utilityTransactions : charged
+accounts ||--o{ movieTransactions : charged
+
+transactions ||--o| transactionOtps : requires
+transactions ||--o{ accountTransactions : recorded
+transactions ||--o{ notifications : generates
+
+mortgageAccounts ||--o{ mortgageInterestSchedules : schedules
+mortgageInterestPayTx ||--o| mortgageInterestPayOtps : requires
+mortgageInterestPayTx ||--o{ accountTransactions : recorded
+mortgageInterestPayTx ||--|| mortgageInterestSchedules : pays
+mortgageInterestPayTx ||--|| accounts : debit account
+
+savingAccounts ||--o| savingWithdrawOtps : withdraw OTP
+savingWithdrawOtps ||--o{ accountTransactions : payout record
+savingWithdrawOtps ||--|| accounts : payout account
+
+utilityTransactions ||--o{ otps : OTP via OtpService
+movieTransactions ||--o{ otps : OTP via OtpService
+
+cinemas ||--o{ showtimes : hosts
+movies ||--o{ showtimes : scheduled
+showtimes ||--o{ movie_bookings : booked
+
+hotels ||--o{ hotel_rooms : offers
+hotel_rooms ||--o{ hotel_bookings : booked
+
+users ||--o{ movie_bookings : places (userId)
+users ||--o{ hotel_bookings : places (customerUid)
+accounts ||--o{ movie_bookings : pays (accountId)
+transactions ||--o{ hotel_bookings : payment (transactionId)
+
+
+
+@enduml

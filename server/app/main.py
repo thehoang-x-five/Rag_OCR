@@ -74,12 +74,32 @@ async def health_check():
         except Exception as e:
             logger.warning(f"Ollama connection check failed: {e}")
     
+    # Check AI provider status
+    ai_providers_status = {}
+    if settings.AI_ENHANCEMENT_ENABLED:
+        try:
+            from app.core.ai_providers.provider_manager import provider_manager
+            provider_statuses = await provider_manager.get_provider_status()
+            
+            for name, status in provider_statuses.items():
+                ai_providers_status[name] = {
+                    "available": status.available,
+                    "responseTimeMs": status.response_time_ms,
+                    "supportsVision": status.supports_vision,
+                    "quotaExceeded": status.quota_exceeded,
+                    "unavailableReason": status.unavailable_reason
+                }
+        except Exception as e:
+            logger.warning(f"Could not get AI provider status: {e}")
+    
     return {
         "ok": True,
         "version": "1.0.0",
         "parserDefault": settings.DEFAULT_PARSER,
         "enableRag": settings.ENABLE_RAG,
-        "ollamaReachable": ollama_reachable
+        "ollamaReachable": ollama_reachable,
+        "aiEnhancementEnabled": settings.AI_ENHANCEMENT_ENABLED,
+        "aiProviders": ai_providers_status if ai_providers_status else None
     }
 
 
