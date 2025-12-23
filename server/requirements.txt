@@ -16,7 +16,7 @@ raganything[all]>=1.2.8
 docling>=2.9.0
 
 # File conversion (optional)
-reportlab==4.2.5
+reportlab==4.4.7
 python-docx==1.1.2
 
 # Environment
